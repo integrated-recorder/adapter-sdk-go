@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dltkddnr04/integrated-recorder-adapter-sdk-go/protocol"
+	"github.com/integrated-recorder/adapter-sdk-go/protocol"
 )
 
 type testAdapter struct {

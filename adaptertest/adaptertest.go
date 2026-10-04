@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dltkddnr04/integrated-recorder-adapter-sdk-go/adapter"
-	"github.com/dltkddnr04/integrated-recorder-adapter-sdk-go/protocol"
+	"github.com/integrated-recorder/adapter-sdk-go/adapter"
+	"github.com/integrated-recorder/adapter-sdk-go/protocol"
 )
 
 func ValidateDescriptor(d protocol.Descriptor) error { return d.Validate() }

@@ -8,7 +8,7 @@ Build a standalone Adapter Protocol v1 executable without importing Integrated R
 mkdir my-recorder-adapter
 cd my-recorder-adapter
 go mod init example.com/my-recorder-adapter
-go get github.com/dltkddnr04/integrated-recorder-adapter-sdk-go@latest
+go get github.com/integrated-recorder/adapter-sdk-go@latest
 ```
 
 Create `main.go` and implement `Descriptor` plus the methods for the capabilities you declare:
@@ -21,8 +21,8 @@ import (
     "fmt"
     "os"
 
-    "github.com/dltkddnr04/integrated-recorder-adapter-sdk-go/adapter"
-    "github.com/dltkddnr04/integrated-recorder-adapter-sdk-go/protocol"
+    "github.com/integrated-recorder/adapter-sdk-go/adapter"
+    "github.com/integrated-recorder/adapter-sdk-go/protocol"
 )
 
 type myAdapter struct{}
@@ -56,7 +56,7 @@ Build and validate the actual executable with the Core-owned black-box runner:
 
 ```sh
 go build -o integrated-recorder-adapter-foo .
-go run github.com/dltkddnr04/integrated-recorder/cmd/adapter-conformance@a245a06020f3017ab329c72a86c0e79133472643 --binary ./integrated-recorder-adapter-foo
+go run github.com/integrated-recorder/core/cmd/adapter-conformance@a245a06020f3017ab329c72a86c0e79133472643 --binary ./integrated-recorder-adapter-foo
 ```
 
 After it passes, install the binary in the Integrated Recorder `adapter-binaries` directory and restart Integrated Recorder so it discovers the executable:
