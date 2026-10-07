@@ -10,7 +10,7 @@ Integrated Recorder의 Source Plugin을 Go로 작성하기 위한 공식 SDK입�
 mkdir my-recorder-adapter
 cd my-recorder-adapter
 go mod init example.com/my-recorder-adapter
-go get github.com/integrated-recorder/adapter-sdk-go@v0.3.0
+go get github.com/integrated-recorder/adapter-sdk-go@v0.4.0
 ```
 
 `main.go`에서 `Descriptor`와 선언한 capability의 handler를 구현합니다.

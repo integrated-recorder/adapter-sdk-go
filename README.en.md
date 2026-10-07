@@ -10,7 +10,7 @@ The official Go SDK for building Integrated Recorder Source Plugins. It helps cr
 mkdir my-recorder-adapter
 cd my-recorder-adapter
 go mod init example.com/my-recorder-adapter
-go get github.com/integrated-recorder/adapter-sdk-go@v0.3.0
+go get github.com/integrated-recorder/adapter-sdk-go@v0.4.0
 ```
 
 Implement `Descriptor` and handlers for the capabilities you declare in `main.go`.

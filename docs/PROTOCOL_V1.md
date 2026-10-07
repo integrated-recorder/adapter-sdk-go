@@ -311,7 +311,7 @@ JSON properties are omitted when absent unless stated otherwise.
 | `StateMutation` | optional `resource`, `values`, `secrets`, `clear_values`, `clear_secrets`. |
 | `MediaSource` | `type`, `manifest_url`; optional `headers`, `request_policy`, `session_ref`, `refresh`, `metadata`, `archive_policy`, `refresh_policy`, `historical_availability`. |
 | `RequestPolicy` / `HeaderForwardingPolicy` / `URLTransformPolicy` | optional `header_forwarding`, `url_transform`; forwarding policy has optional `mode`, `origins`; URL transform has optional `allowed_origins`, `rules`. |
-| `HistoricalAvailability` | `mode` (`rolling_window`, `sequence_ranges`, or `time_ranges`); matching bounded window or ranges; optional `historical_manifest_url`. |
+| `HistoricalAvailability` | `mode` (`rolling_window`, `sequence_ranges`, `time_ranges`, or `manifest`); matching bounded window, ranges, or historical manifest URL. |
 | `URLTransformRule` | required `scopes`; optional `path_suffix` (`from`, `to`) and `query_parameters` (`from`, `to`). |
 | `PathSuffixRewrite` / `QueryParameterPropagation` | required `from`, `to`; literal path suffix replacement or selected query value copy. |
 | `ArchivePolicy` | optional `source_uri` classification (`sensitive` or `public`); omission means `sensitive`. |
@@ -452,10 +452,25 @@ It does not assert that Core already stores media or guarantee a successful
 fetch. `rolling_window` requires `window_seconds` from 1 through 31,622,400;
 `sequence_ranges` requires 1–64 inclusive, ordered, non-overlapping ranges;
 `time_ranges` requires 1–64 ordered, non-overlapping RFC3339 ranges with a
-nonzero start before the end. Fields for other modes must be omitted or empty.
-`historical_manifest_url`, when present, must be an absolute HTTP(S) URL without
-userinfo or fragment. Core uses it when the historical manifest differs from
-the current manifest.
+nonzero start before the end. `manifest` requires `historical_manifest_url` and
+does not accept a window or ranges. Fields for other modes must be omitted or
+empty. `historical_manifest_url`, when present, must be an absolute HTTP(S) URL
+without userinfo or fragment. Core uses it when the historical manifest differs
+from the current manifest.
+
+In `manifest` mode, media coordinates advertised by the current historical
+media playlist form the currently observed recoverable set. A coordinate absent
+from that playlist is unknown or outside the current observation; absence does
+not mean missing or permanently unavailable. An explicit `EXT-X-GAP` remains a
+known-missing observation. Historical playlists can slide or change size over
+time. Core preserves already archived media when coordinates disappear and can
+discover newly advertised coordinates on later observations. Use
+`rolling_window` when availability is defined by a fixed duration,
+`sequence_ranges` or `time_ranges` when the source can declare exact bounds, and
+`manifest` when the source manifest itself is the authoritative current view.
+In Go, set `Mode: protocol.HistoricalModeManifest` and provide
+`HistoricalManifestURL`; the SDK retains `Mode` as a string for source
+compatibility.
 
 `request_policy.url_transform` declares bounded request URL changes. A rule
 selects one or more scopes (`manifest`, `variant`, `media`, `init`, `key`) and

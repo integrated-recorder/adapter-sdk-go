@@ -15,6 +15,7 @@ const (
 	HistoricalModeRollingWindow  = "rolling_window"
 	HistoricalModeSequenceRanges = "sequence_ranges"
 	HistoricalModeTimeRanges     = "time_ranges"
+	HistoricalModeManifest       = "manifest"
 )
 
 const (
@@ -93,6 +94,10 @@ func (availability *HistoricalAvailability) Validate() error {
 			if i > 0 && !availability.TimeRanges[i-1].End.Before(span.Start) {
 				return fmt.Errorf("historical time ranges must be ordered and non-overlapping")
 			}
+		}
+	case HistoricalModeManifest:
+		if availability.HistoricalManifestURL == "" || availability.WindowSeconds != 0 || len(availability.SequenceRanges) != 0 || len(availability.TimeRanges) != 0 {
+			return fmt.Errorf("historical manifest availability is invalid")
 		}
 	default:
 		return fmt.Errorf("unsupported historical availability mode")
