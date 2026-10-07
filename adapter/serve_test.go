@@ -398,3 +398,77 @@ func serveWorkflowResult(t *testing.T, result protocol.ResolveWorkflowResult) pr
 	}
 	return response
 }
+
+func TestServeValidatesHistoricalMediaAndURLTransforms(t *testing.T) {
+	cases := []struct {
+		name    string
+		media   protocol.MediaSource
+		wantErr bool
+	}{
+		{
+			name: "valid combined declaration",
+			media: protocol.MediaSource{
+				Type: "hls", ManifestURL: "https://media.example.test/live.m3u8",
+				HistoricalAvailability: &protocol.HistoricalAvailability{
+					Mode:           protocol.HistoricalModeSequenceRanges,
+					SequenceRanges: []protocol.HistoricalSequenceRange{{Start: 1, End: 10}},
+				},
+				RequestPolicy: &protocol.RequestPolicy{URLTransform: &protocol.URLTransformPolicy{
+					Rules: []protocol.URLTransformRule{{Scopes: []protocol.ResourceRequestScope{protocol.RequestScopeMedia}, QueryParameters: []protocol.QueryParameterPropagation{{From: "signature", To: "token"}}}},
+				}},
+			},
+		},
+		{
+			name: "invalid historical declaration",
+			media: protocol.MediaSource{
+				Type: "hls", ManifestURL: "https://media.example.test/live.m3u8",
+				HistoricalAvailability: &protocol.HistoricalAvailability{Mode: protocol.HistoricalModeRollingWindow},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid URL transform",
+			media: protocol.MediaSource{
+				Type: "hls", ManifestURL: "https://media.example.test/live.m3u8",
+				RequestPolicy: &protocol.RequestPolicy{URLTransform: &protocol.URLTransformPolicy{
+					Rules: []protocol.URLTransformRule{{Scopes: []protocol.ResourceRequestScope{"unknown"}, PathSuffix: &protocol.PathSuffixRewrite{From: ".old", To: ".new"}}},
+				}},
+			},
+			wantErr: true,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			a := newTestAdapter()
+			a.resolve = func(context.Context, protocol.ResolveParams) (protocol.ResolveResult, error) {
+				return protocol.ResolveResult{Media: test.media}, nil
+			}
+			input := `{"protocol_version":1,"id":"resolve","method":"resolve"}` + "\n" + `{"protocol_version":1,"id":"shutdown","method":"shutdown"}` + "\n"
+			var output strings.Builder
+			if err := ServeIO(context.Background(), a, strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(strings.NewReader(output.String()))
+			response, err := protocol.ReadResponse(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr {
+				if response.Error == nil || response.Error.Code != "invalid_result" {
+					t.Fatalf("invalid media response = %#v", response)
+				}
+				return
+			}
+			if response.Error != nil {
+				t.Fatalf("valid media rejected: %#v", response.Error)
+			}
+			var result protocol.ResolveResult
+			if err := json.Unmarshal(response.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Media.HistoricalAvailability == nil || result.Media.RequestPolicy == nil || result.Media.RequestPolicy.URLTransform == nil {
+				t.Fatalf("new declarations missing in output: %s", response.Result)
+			}
+		})
+	}
+}

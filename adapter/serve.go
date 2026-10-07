@@ -472,5 +472,13 @@ func validateMedia(m protocol.MediaSource, supported []string) error {
 	if !allowed || m.ManifestURL == "" {
 		return fmt.Errorf("media type or URL is invalid")
 	}
+	if err := m.HistoricalAvailability.Validate(); err != nil {
+		return fmt.Errorf("historical availability is invalid: %w", err)
+	}
+	if m.RequestPolicy != nil {
+		if err := m.RequestPolicy.URLTransform.Validate(); err != nil {
+			return fmt.Errorf("URL transform policy is invalid: %w", err)
+		}
+	}
 	return nil
 }

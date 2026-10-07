@@ -291,15 +291,16 @@ type AdapterProvenance struct {
 	Fingerprint     string `json:"descriptor_fingerprint,omitempty"`
 }
 type MediaSource struct {
-	Type          string            `json:"type"`
-	ManifestURL   string            `json:"manifest_url"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	RequestPolicy *RequestPolicy    `json:"request_policy,omitempty"`
-	SessionRef    string            `json:"session_ref,omitempty"`
-	Refresh       json.RawMessage   `json:"refresh,omitempty"`
-	Metadata      json.RawMessage   `json:"metadata,omitempty"`
-	ArchivePolicy *ArchivePolicy    `json:"archive_policy,omitempty"`
-	RefreshPolicy *RefreshPolicy    `json:"refresh_policy,omitempty"`
+	Type                   string                  `json:"type"`
+	ManifestURL            string                  `json:"manifest_url"`
+	Headers                map[string]string       `json:"headers,omitempty"`
+	RequestPolicy          *RequestPolicy          `json:"request_policy,omitempty"`
+	SessionRef             string                  `json:"session_ref,omitempty"`
+	Refresh                json.RawMessage         `json:"refresh,omitempty"`
+	Metadata               json.RawMessage         `json:"metadata,omitempty"`
+	ArchivePolicy          *ArchivePolicy          `json:"archive_policy,omitempty"`
+	RefreshPolicy          *RefreshPolicy          `json:"refresh_policy,omitempty"`
+	HistoricalAvailability *HistoricalAvailability `json:"historical_availability,omitempty"`
 }
 type RefreshPolicy struct {
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
@@ -336,6 +337,7 @@ type ArchivePolicy struct {
 }
 type RequestPolicy struct {
 	HeaderForwarding *HeaderForwardingPolicy `json:"header_forwarding,omitempty"`
+	URLTransform     *URLTransformPolicy     `json:"url_transform,omitempty"`
 }
 type HeaderForwardingPolicy struct {
 	Mode    string   `json:"mode,omitempty"`

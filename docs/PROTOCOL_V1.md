@@ -7,7 +7,7 @@ Recorder source code. The current Go wire implementation is in
 `cmd/adapter-conformance`.
 
 Protocol version: **1**. This document describes the implementation at Core
-commit `2df5e407d2a2f0013c8d3034f2b1cb6dc0ec6c36` and is maintained with that
+commit `049e3480643a7059f720638258ed309aba62b187` and is maintained with that
 contract. JSON examples in `protocol/adapter-v1/` are executable golden vectors.
 
 ## Compatibility policy
@@ -309,8 +309,11 @@ JSON properties are omitted when absent unless stated otherwise.
 | `WorkflowChallenge` | `schema`; optional `prompt`, optional `persistable`. |
 | `StateDocument` | optional `resource`, `values`, `secrets`. |
 | `StateMutation` | optional `resource`, `values`, `secrets`, `clear_values`, `clear_secrets`. |
-| `MediaSource` | `type`, `manifest_url`; optional `headers`, `request_policy`, `session_ref`, `refresh`, `metadata`, `archive_policy`, `refresh_policy`. |
-| `RequestPolicy` / `HeaderForwardingPolicy` | optional `header_forwarding`; policy has optional `mode`, `origins`. |
+| `MediaSource` | `type`, `manifest_url`; optional `headers`, `request_policy`, `session_ref`, `refresh`, `metadata`, `archive_policy`, `refresh_policy`, `historical_availability`. |
+| `RequestPolicy` / `HeaderForwardingPolicy` / `URLTransformPolicy` | optional `header_forwarding`, `url_transform`; forwarding policy has optional `mode`, `origins`; URL transform has optional `allowed_origins`, `rules`. |
+| `HistoricalAvailability` | `mode` (`rolling_window`, `sequence_ranges`, or `time_ranges`); matching bounded window or ranges; optional `historical_manifest_url`. |
+| `URLTransformRule` | required `scopes`; optional `path_suffix` (`from`, `to`) and `query_parameters` (`from`, `to`). |
+| `PathSuffixRewrite` / `QueryParameterPropagation` | required `from`, `to`; literal path suffix replacement or selected query value copy. |
 | `ArchivePolicy` | optional `source_uri` classification (`sensitive` or `public`); omission means `sensitive`. |
 | `RefreshPolicy` | optional `expires_at`, `refresh_before_seconds`, `on_http_status`. |
 | `RefreshParams` | optional `resource`; required `current` media; optional `state`. |
@@ -443,6 +446,29 @@ may provide an RFC3339 `expires_at`, a `refresh_before_seconds` value from 0 to
 refresh according to declared policy; it does not infer platform expiry
 semantics. `archive_policy.source_uri` is `sensitive` by default or explicitly
 `public`.
+
+`historical_availability` declares source media that Core may acquire later.
+It does not assert that Core already stores media or guarantee a successful
+fetch. `rolling_window` requires `window_seconds` from 1 through 31,622,400;
+`sequence_ranges` requires 1–64 inclusive, ordered, non-overlapping ranges;
+`time_ranges` requires 1–64 ordered, non-overlapping RFC3339 ranges with a
+nonzero start before the end. Fields for other modes must be omitted or empty.
+`historical_manifest_url`, when present, must be an absolute HTTP(S) URL without
+userinfo or fragment. Core uses it when the historical manifest differs from
+the current manifest.
+
+`request_policy.url_transform` declares bounded request URL changes. A rule
+selects one or more scopes (`manifest`, `variant`, `media`, `init`, `key`) and
+must contain a literal path-suffix replacement, query-parameter propagation, or
+both. Policies allow at most 16 rules and 16 exact HTTP(S) origins; origins do
+not include a path, query, fragment, or userinfo. Each rule allows at most 5
+scopes and 8 query mappings. Suffixes are at most 128 printable ASCII bytes and
+cannot contain path separators or URL delimiters. Query parameter names use
+the bounded ASCII name vocabulary. Core copies query values from the source URL;
+missing values remain absent and duplicate source values are rejected. Cross-
+origin targets require an exact entry in `allowed_origins`. Core applies
+transforms and retains URL, redirect, and SSRF checks. SDK does not provide a
+fetch, proxy, or arbitrary rewrite hook.
 
 `watch.check` returns `{"state":"offline"}` for a successful offline check,
 or `{"state":"live", ...}` for live. `session_ref` is an opaque identifier
