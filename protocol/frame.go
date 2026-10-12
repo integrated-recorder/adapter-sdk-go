@@ -46,8 +46,37 @@ func ReadResponse(r *bufio.Reader) (Response, error) {
 	return *f.Response, nil
 }
 
+// ReadFrame reads and classifies one bounded v1 protocol frame.
+func ReadFrame(r *bufio.Reader) (Frame, error) {
+	line, err := readFrame(r)
+	if err != nil {
+		return Frame{}, err
+	}
+	return ParseFrame(line)
+}
+
 func WriteRequest(w io.Writer, req Request) error        { return writeFrame(w, req) }
 func WriteResponse(w io.Writer, response Response) error { return writeFrame(w, response) }
+
+func Success(id string, result any) (Response, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return Response{}, err
+	}
+	return Response{ProtocolVersion: Version, ID: id, Result: data}, nil
+}
+
+func WriteNotification(w io.Writer, notification Notification) error {
+	if notification.ProtocolVersion != Version || strings.TrimSpace(notification.Method) == "" || len(notification.Params) > MaxFrameBytes || len(notification.Params) > 0 && !json.Valid(notification.Params) {
+		return errors.New("invalid protocol notification")
+	}
+	return writeFrame(w, struct {
+		ProtocolVersion int             `json:"protocol_version"`
+		Type            FrameType       `json:"type"`
+		Method          string          `json:"method"`
+		Params          json.RawMessage `json:"params,omitempty"`
+	}{notification.ProtocolVersion, FrameTypeNotification, notification.Method, notification.Params})
+}
 
 // ParseFrame validates the common v1 envelope shape. Notification frames are
 // recognized for compatibility but are not delivered by Serve.

@@ -34,6 +34,12 @@ type Watcher interface {
 type MetadataProvider interface {
 	Metadata(context.Context, protocol.MetadataParams) (protocol.MetadataResult, error)
 }
+
+// TimedEventProvider owns source connectivity and payload interpretation. Its
+// emitter blocks until Core durably accepts each batch and acknowledges it.
+type TimedEventProvider interface {
+	StreamTimedEvents(context.Context, protocol.TimedEventStartParams, func(protocol.TimedEventBatch) error) error
+}
 type Refresher interface {
 	Refresh(context.Context, protocol.RefreshParams) (protocol.RefreshResult, error)
 }
@@ -95,6 +101,8 @@ func ServeIO(ctx context.Context, a Adapter, input io.Reader, output io.Writer) 
 	if err := validateDescriptor(d, a); err != nil {
 		return err
 	}
+	streams := newTimedEventStreams(ctx, output)
+	defer streams.close()
 	reader := bufio.NewReaderSize(input, 64<<10)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -107,10 +115,14 @@ func ServeIO(ctx context.Context, a Adapter, input io.Reader, output io.Writer) 
 			}
 			return err
 		}
-		response, stop := dispatchSafely(ctx, a, d, req)
-		if err := protocol.WriteResponse(output, response); err != nil {
+		response, stop, handled := streams.dispatch(ctx, a, d, req)
+		if !handled {
+			response, stop = dispatchSafely(ctx, a, d, req)
+		}
+		if err := streams.writeResponse(response); err != nil {
 			return err
 		}
+		streams.responseWritten(req)
 		if stop {
 			return nil
 		}
@@ -142,7 +154,7 @@ func checkCapabilityInterfaces(d protocol.Descriptor, a Adapter) error {
 	// Protocol v1 reserves these capabilities, but the current Core runtime
 	// does not dispatch their method families. This SDK therefore fails early
 	// rather than advertising support it cannot provide.
-	for _, dormant := range []string{protocol.CapabilityStatus, protocol.CapabilityConfigure, protocol.CapabilityInteraction, protocol.CapabilityEvents} {
+	for _, dormant := range []string{protocol.CapabilityStatus, protocol.CapabilityConfigure, protocol.CapabilityInteraction} {
 		if declared[dormant] {
 			return fmt.Errorf("capability %q is reserved and not served by this SDK", dormant)
 		}
@@ -155,6 +167,7 @@ func checkCapabilityInterfaces(d protocol.Descriptor, a Adapter) error {
 		{protocol.CapabilityResolveWorkflow, implements[WorkflowResolver](a)},
 		{protocol.CapabilityWatch, implements[Watcher](a)},
 		{protocol.CapabilityMetadata, implements[MetadataProvider](a)},
+		{protocol.CapabilityEvents, implements[TimedEventProvider](a)},
 		{protocol.CapabilityRefresh, implements[Refresher](a)},
 		{protocol.CapabilityResourceBrowse, implements[ResourceBrowser](a)},
 	}

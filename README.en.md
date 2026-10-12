@@ -74,10 +74,31 @@ The SDK provides an authoring API and test helpers. Core's `adapter-conformance`
 - `WorkflowResolver` — `resolve_workflow`
 - `Watcher` — `watch`
 - `MetadataProvider` — `metadata`
+- `TimedEventProvider` — `events`
 - `Refresher` — `refresh`
 - `ResourceBrowser` — `resource_browse`
 
-The SDK checks that declarations and implementations match in both directions. Protocol v1 also names `status`, `configure`, `interaction`, and `events`, but the current Core runtime does not dispatch these method families and the SDK rejects declaring them. Unknown but valid capability identifiers can be preserved in descriptors.
+The SDK checks that declarations and implementations match in both directions. `events` is optional. `TimedEventProvider.StreamTimedEvents` lets a source plugin own its connection, authentication, and cursor interpretation. Its emitter returns only after Core commits and acknowledges the batch. `TimedEventBatcher` applies a 32-event/256 KiB batch bound, a 250 ms flush interval, and a bounded queue. Persist a source cursor only after the corresponding `Flush` succeeds.
+
+```go
+func (a *myAdapter) StreamTimedEvents(
+    ctx context.Context,
+    start protocol.TimedEventStartParams,
+    emit func(protocol.TimedEventBatch) error,
+) error {
+    batcher, err := adapter.NewTimedEventBatcher(start.StreamID, emit)
+    if err != nil { return err }
+    event := protocol.TimedEvent{
+        EventType: "chat.message",
+        SourceEventID: "source-owned-id",
+        Message: &protocol.TimedEventMessage{Text: "hello"},
+    }
+    if err := batcher.Add(event, json.RawMessage(`{"cursor":"after-event"}`)); err != nil { return err }
+    return batcher.Flush(ctx)
+}
+```
+
+The Protocol v1 capabilities `status`, `configure`, and `interaction` remain reserved and are rejected by this SDK. Unknown but valid capability identifiers can be preserved in descriptors.
 
 The SDK handles `describe` and `shutdown`, and runs requests sequentially. `ServeContext` passes its caller context to handlers. Ordinary Go errors are replaced by a safe `internal_error`; use `adapter.Error(code, message)` only for deliberate, bounded wire messages.
 
@@ -89,7 +110,13 @@ The deterministic executable in `examples/minimal` runs without an external acco
 go build -o integrated-recorder-adapter-example ./examples/minimal
 ```
 
-Method, schema, resource, workflow, metadata, refresh, and watch semantics are documented in [Protocol v1](docs/PROTOCOL_V1.md). Machine-readable vectors are in [protocol/adapter-v1](protocol/adapter-v1/), and `adaptertest` provides in-process helpers.
+`examples/timed-events` is a deterministic fixture for the optional event capability, reconnect cursor, and advancing the cursor only after Core's durable acknowledgement.
+
+```sh
+go build -o integrated-recorder-adapter-timed-events ./examples/timed-events
+```
+
+Method, schema, resource, workflow, metadata, timed event, refresh, and watch semantics are documented in [Protocol v1](docs/PROTOCOL_V1.md). Machine-readable vectors are in [protocol/adapter-v1](protocol/adapter-v1/), and `adaptertest` provides in-process helpers.
 
 ## Security boundary
 

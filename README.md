@@ -74,10 +74,31 @@ SDK는 authoring API와 테스트 편의를 제공하고, Core의 `adapter-confo
 - `WorkflowResolver` — `resolve_workflow`
 - `Watcher` — `watch`
 - `MetadataProvider` — `metadata`
+- `TimedEventProvider` — `events`
 - `Refresher` — `refresh`
 - `ResourceBrowser` — `resource_browse`
 
-SDK는 선언과 구현이 양방향으로 일치하는지 검사합니다. Protocol v1에는 `status`, `configure`, `interaction`, `events` 이름도 있지만 현재 Core runtime은 이를 dispatch하지 않으며 SDK도 선언을 거부합니다. 알 수 있지만 형식에 맞는 capability 식별자는 descriptor에서 보존될 수 있습니다.
+SDK는 선언과 구현이 양방향으로 일치하는지 검사합니다. `events`는 선택 capability입니다. `TimedEventProvider.StreamTimedEvents`는 source plugin이 연결·인증·cursor 해석을 소유하고, Core가 archive commit 후 batch를 확인할 때까지 emitter가 반환하지 않는 비동기 event stream입니다. `TimedEventBatcher`는 32개 이하·최대 256 KiB batch와 250 ms flush를 적용하며 queue도 제한합니다. flush가 성공한 뒤에만 해당 batch의 opaque resume state를 다음 start에 전달할 수 있습니다.
+
+```go
+func (a *myAdapter) StreamTimedEvents(
+    ctx context.Context,
+    start protocol.TimedEventStartParams,
+    emit func(protocol.TimedEventBatch) error,
+) error {
+    batcher, err := adapter.NewTimedEventBatcher(start.StreamID, emit)
+    if err != nil { return err }
+    event := protocol.TimedEvent{
+        EventType: "chat.message",
+        SourceEventID: "source-owned-id",
+        Message: &protocol.TimedEventMessage{Text: "hello"},
+    }
+    if err := batcher.Add(event, json.RawMessage(`{"cursor":"after-event"}`)); err != nil { return err }
+    return batcher.Flush(ctx)
+}
+```
+
+`events` 외에 Protocol v1의 `status`, `configure`, `interaction`은 예약 상태이며 SDK가 선언을 거부합니다. 알 수 있지만 형식에 맞는 capability 식별자는 descriptor에서 보존될 수 있습니다.
 
 SDK가 `describe`와 `shutdown`을 처리하고 요청을 순차 실행합니다. `ServeContext`는 호출자의 context를 handler에 전달합니다. 일반 Go 오류는 안전한 `internal_error`로 치환됩니다. 의도적으로 안전하고 bounded한 wire message에만 `adapter.Error(code, message)`를 사용하세요.
 
@@ -89,7 +110,13 @@ SDK가 `describe`와 `shutdown`을 처리하고 요청을 순차 실행합니다
 go build -o integrated-recorder-adapter-example ./examples/minimal
 ```
 
-Protocol의 method, schema, resource, workflow, metadata, refresh, watch 의미는 [Protocol v1 문서](docs/PROTOCOL_V1.md)에 있습니다. Machine-readable vector는 [protocol/adapter-v1](protocol/adapter-v1/)에, in-process helper는 `adaptertest`에 있습니다.
+`examples/timed-events`는 선택적 event capability, 재연결 cursor, durable ACK 뒤 cursor 전진을 보여주는 결정적 fixture입니다.
+
+```sh
+go build -o integrated-recorder-adapter-timed-events ./examples/timed-events
+```
+
+Protocol의 method, schema, resource, workflow, metadata, timed event, refresh, watch 의미는 [Protocol v1 문서](docs/PROTOCOL_V1.md)에 있습니다. Machine-readable vector는 [protocol/adapter-v1](protocol/adapter-v1/)에, in-process helper는 `adaptertest`에 있습니다.
 
 ## 보안 경계
 

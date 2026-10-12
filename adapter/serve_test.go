@@ -81,6 +81,205 @@ func TestServeIOFramesDescribeResolveUnsupportedAndShutdown(t *testing.T) {
 	}
 }
 
+type timedEventTestAdapter struct{ descriptor protocol.Descriptor }
+
+func (a *timedEventTestAdapter) Descriptor() protocol.Descriptor { return a.descriptor }
+func (*timedEventTestAdapter) Resolve(context.Context, protocol.ResolveParams) (protocol.ResolveResult, error) {
+	return protocol.ResolveResult{}, nil
+}
+func (*timedEventTestAdapter) StreamTimedEvents(ctx context.Context, params protocol.TimedEventStartParams, emit func(protocol.TimedEventBatch) error) error {
+	return emit(protocol.TimedEventBatch{StreamID: params.StreamID, BatchID: "batch-1", Events: []protocol.TimedEvent{{EventType: "chat.message", Payload: json.RawMessage(`{"text":"hello"}`)}}})
+}
+
+func TestTimedEventStreamWaitsForDurableCoreAck(t *testing.T) {
+	a := &timedEventTestAdapter{descriptor: protocol.Descriptor{
+		ID: "timed-test", Name: "Timed test", Version: "1", ProtocolVersion: protocol.Version,
+		Capabilities: []string{protocol.CapabilityResolve, protocol.CapabilityEvents}, InputSchema: protocol.Schema{Fields: []protocol.Field{}},
+		ConfigurationSchema: protocol.Schema{Fields: []protocol.Field{}}, MediaTypes: []string{"hls"},
+	}}
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- ServeIO(context.Background(), a, inputReader, outputWriter) }()
+	reader := bufio.NewReader(outputReader)
+	write := func(req protocol.Request) {
+		t.Helper()
+		if err := protocol.WriteRequest(inputWriter, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() protocol.Frame {
+		t.Helper()
+		frame, err := protocol.ReadFrame(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+	start, _ := json.Marshal(protocol.TimedEventStartParams{StreamID: "stream-1"})
+	write(protocol.Request{ProtocolVersion: 1, ID: "start", Method: protocol.MethodEventsStart, Params: start})
+	startFrame := read()
+	if startFrame.Kind != protocol.FrameTypeResponse || startFrame.Response.Error != nil {
+		t.Fatalf("start response: %#v", startFrame)
+	}
+	notification := read()
+	if notification.Kind != protocol.FrameTypeNotification || notification.Notification.Method != protocol.MethodEventsBatch {
+		t.Fatalf("event notification: %#v", notification)
+	}
+	var batch protocol.TimedEventBatch
+	if err := json.Unmarshal(notification.Notification.Params, &batch); err != nil || batch.BatchID != "batch-1" {
+		t.Fatalf("batch=%#v err=%v", batch, err)
+	}
+	ack, _ := json.Marshal(protocol.TimedEventAckParams{StreamID: "stream-1", BatchID: "batch-1"})
+	write(protocol.Request{ProtocolVersion: 1, ID: "ack", Method: protocol.MethodEventsAck, Params: ack})
+	ackFrame := read()
+	if ackFrame.Kind != protocol.FrameTypeResponse || ackFrame.Response.Error != nil {
+		t.Fatalf("ack response: %#v", ackFrame)
+	}
+	ended := read()
+	if ended.Kind != protocol.FrameTypeNotification || ended.Notification.Method != protocol.MethodEventsEnded {
+		t.Fatalf("stream completion notification: %#v", ended)
+	}
+	write(protocol.Request{ProtocolVersion: 1, ID: "shutdown", Method: protocol.MethodShutdown})
+	if frame := read(); frame.Kind != protocol.FrameTypeResponse || frame.Response.Error != nil {
+		t.Fatalf("shutdown response: %#v", frame)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	_ = inputWriter.Close()
+	_ = outputReader.Close()
+}
+
+func TestTimedEventBatcherFlushesByTimeAndWaitsForAck(t *testing.T) {
+	emitted := make(chan protocol.TimedEventBatch, 1)
+	ack := make(chan struct{})
+	batcher, err := NewTimedEventBatcher("stream", func(batch protocol.TimedEventBatch) error {
+		emitted <- batch
+		<-ack
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := batcher.Add(protocol.TimedEvent{EventType: "chat.message", Payload: json.RawMessage(`{"text":"hello"}`)}, json.RawMessage(`{"cursor":"c1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case batch := <-emitted:
+		if len(batch.Events) != 1 || string(batch.ResumeState) != `{"cursor":"c1"}` {
+			t.Fatalf("batch=%#v", batch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event batch did not flush on the time bound")
+	}
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- batcher.Flush(context.Background()) }()
+	close(ack)
+	select {
+	case err := <-flushDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("flush did not finish after Core acknowledgement")
+	}
+}
+
+func TestTimedEventBatcherBoundsBatchBytesAndQueuedEvents(t *testing.T) {
+	started := make(chan protocol.TimedEventBatch, 8)
+	batcher, err := NewTimedEventBatcher("stream", func(batch protocol.TimedEventBatch) error {
+		started <- batch
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := protocol.TimedEvent{EventType: "chat.message", Message: &protocol.TimedEventMessage{Text: strings.Repeat("x", 30<<10)}}
+	addDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < 32; i++ {
+			if err := batcher.Add(large, nil); err != nil {
+				addDone <- err
+				return
+			}
+		}
+		addDone <- nil
+	}()
+	select {
+	case err := <-addDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bounded batches did not drain")
+	}
+	total := 0
+	for {
+		select {
+		case batch := <-started:
+			encoded, err := json.Marshal(batch)
+			if err != nil || len(encoded) > protocol.MaxTimedEventBatchBytes {
+				t.Fatalf("batch bytes=%d err=%v", len(encoded), err)
+			}
+			if len(batch.Events) > timedEventBatcherMaxEvents {
+				t.Fatalf("batch event count=%d", len(batch.Events))
+			}
+			total += len(batch.Events)
+		default:
+			if total != 32 {
+				t.Fatalf("flushed event count=%d", total)
+			}
+			return
+		}
+	}
+}
+
+func TestTimedEventBatcherAppliesQueueBackpressureWhileAwaitingAck(t *testing.T) {
+	started := make(chan protocol.TimedEventBatch, 4)
+	release := make(chan struct{})
+	batcher, err := NewTimedEventBatcher("stream", func(batch protocol.TimedEventBatch) error {
+		started <- batch
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < timedEventBatcherMaxEvents; i++ {
+			if err := batcher.Add(protocol.TimedEvent{EventType: "custom.example"}, nil); err != nil {
+				addDone <- err
+				return
+			}
+		}
+		addDone <- nil
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("count threshold did not start a batch")
+	}
+	for index := 0; index < timedEventBatcherMaxQueued; index++ {
+		if err := batcher.Add(protocol.TimedEvent{EventType: "custom.example"}, nil); err != nil {
+			t.Fatalf("queue item %d unexpectedly rejected: %v", index, err)
+		}
+	}
+	if err := batcher.Add(protocol.TimedEvent{EventType: "custom.example"}, nil); !errors.Is(err, ErrTimedEventBackpressure) {
+		t.Fatalf("queue overflow error=%v", err)
+	}
+	close(release)
+	select {
+	case err := <-addDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued batches did not drain after acknowledgement")
+	}
+}
+
 func TestServeRedactsOrdinaryErrorsAndDoesNotEchoParams(t *testing.T) {
 	a := newTestAdapter()
 	a.resolve = func(context.Context, protocol.ResolveParams) (protocol.ResolveResult, error) {

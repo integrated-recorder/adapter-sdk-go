@@ -99,11 +99,10 @@ the object shape expected by Core.
 
 ### Notifications
 
-The parser recognizes a reserved typed notification envelope such as
-`{"protocol_version":1,"type":"notification","method":"events.emit"}`.
-This only means the syntax can be parsed. The current runtime does not deliver
-asynchronous notifications. Adapter implementations must not depend on
-notification delivery in v1.
+The Core runtime delivers bounded typed notifications for the optional
+`events` capability. A notification is a normal NDJSON frame, has no request
+`id`, and must not be confused with a response. See the timed event contract
+below. Other unsolicited notification methods are ignored.
 
 ## Identifiers, schemas, resources, and configuration
 
@@ -288,7 +287,7 @@ JSON properties are omitted when absent unless stated otherwise.
 | `Request` | `protocol_version` integer; `id`, `method` strings; optional `params` JSON. |
 | `Response` | `protocol_version`; `id`; exactly one of `result` JSON or `error`. |
 | `Error` | required nonempty `code`; `message`; optional arbitrary JSON `details`. |
-| `Notification` | reserved typed form: `protocol_version`, `type:"notification"`, `method`, optional `params`; no `id`. Runtime delivery is unsupported. |
+| `Notification` | `protocol_version`, `type:"notification"`, `method`, optional `params`; no `id`. `events.batch` and `events.ended` are the active notification forms. |
 | `Descriptor` | `id`, `name`, `version`, `protocol_version`, optional `capabilities`, `input_schema`, `configuration_schema`, optional `resource_types`, `media_types`, optional `branding`. |
 | `Branding` / `BrandIcon` | optional `icon`; icon `media_type`, base64 `data`. |
 | `Schema` / `Field` | `fields`; field members are `key`, `control`, `label`, optional `description`, `required`, `inherit`, `default`, `constraints`, `options`, `visible_when`, `persistence`. |
@@ -321,6 +320,10 @@ JSON properties are omitted when absent unless stated otherwise.
 | `MetadataParams` | optional `resource`; required `current`; optional `configuration`, `secrets`, `state`. |
 | `StreamMetadata` | optional nullable `title`, `description` strings. |
 | `MetadataResult` | `metadata`; optional `source_updated_at`, `state_mutations`. Core's decoder accepts omitted or `null` `metadata` as a zero `StreamMetadata` (both fields unknown); SDK encoding emits `{}`. Adapters should emit an explicit object. |
+| `TimedEvent` | `event_type`; optional `source_event_id`, `source_sequence`, `source_timestamp`, `actor`, `message`, `reply_to`, `amount`, `currency`, `related_event_id`, `payload`, `extension`. |
+| `TimedEventBatch` | `stream_id`, `batch_id`, nonempty `events`; optional opaque `resume_state`. |
+| `TimedEventStartParams` | `stream_id`, `recording_id`, `current`; optional `resource`, `configuration`, `secrets`, `state`, `resume_state`. |
+| `TimedEventAckParams` / `TimedEventStopParams` | `stream_id`; ack also has `batch_id`. |
 | `WatchCheckParams` | required object `input`; optional `resource`, `configuration`, `secrets`, `state`. |
 | `WatchCheckResult` | `state`; optional `session_ref`, `title`, `started_at`, `media`, `state_mutations`. |
 | `InteractionMessage` | `type`, `interaction_id`; optional `title`, `message`, `fields`, `data`. |
@@ -353,9 +356,9 @@ and is not supplied by the adapter.
 `describe` is always called and has no capability requirement. A valid
 descriptor declares `resolve` or `resolve_workflow`. The Core actively dispatches
 the operations in the table below. `status`, `configure`, `interaction`, and
-`events` are recognized v1 names/capabilities but currently have no active Core
-dispatch path; declaring them does not make Core call them. Capability
-declaration is required for the actively gated operation.
+`status`, `configure`, and `interaction` remain reserved v1 names. `events` is
+an active optional capability. Capability declaration is required for each
+actively gated operation.
 
 | Capability | Declaration means | Core behavior |
 | --- | --- | --- |
@@ -368,7 +371,7 @@ declaration is required for the actively gated operation.
 | `status` | Reserved v1 capability identifier. | No active Core dispatch path. |
 | `configure` | Reserved v1 capability identifier. | No active Core dispatch path. |
 | `interaction` | Reserved v1 capability identifier. | No active Core dispatch path; workflow challenges may carry interaction messages but do not invoke a separate interaction method. |
-| `events` | Reserved v1 capability identifier. | No active Core dispatch path. Notifications are not delivered. |
+| `events` | The plugin can provide a persistent platform-neutral timed event stream for an active recording. | Core starts, acknowledges, and stops the stream; it commits batches before acknowledging them. Failure is isolated from media capture. |
 
 <!-- protocol-v1-capabilities:start -->
 resolve
@@ -413,7 +416,11 @@ watch.check
 | `interaction.begin` | `interaction`; reserved, no active Core dispatch. | No active Core-defined params/result behavior. | Do not assume Core calls it. |
 | `interaction.continue` | `interaction`; reserved, no active Core dispatch. | No active Core-defined params/result behavior. | Do not assume Core calls it. |
 | `metadata` | `metadata`; recording metadata observer. | `MetadataParams`; result `MetadataResult`. | `title` and `description` are optional pointers: omitted/null is unknown, empty string is known empty. Optional source timestamp is metadata source time, not Core observation time. State mutations are committed only after caller persistence validation. Failures are isolated from media acquisition. |
-| `events` | `events`; reserved, no active Core dispatch. | No active Core-defined params/result behavior. | Parser-recognized notification syntax does not enable delivery. |
+| `events.start` | `events`; Core starts a recording-scoped stream. | `TimedEventStartParams`; result `TimedEventStartResult`. | Includes opaque last durable `resume_state`. Plugin owns source cursor meaning and catch-up. |
+| `events.batch` | `events`; plugin notification. | `TimedEventBatch` notification with up to 64 events and optional `resume_state`. | Core validates and commits the batch before sending `events.ack`; malformed/oversized batches stop only the event stream. |
+| `events.ack` | `events`; Core acknowledges a committed batch. | `{stream_id,batch_id}`; empty result. | Plugin may advance durable source cursor only after this acknowledgement. One unacknowledged batch per stream is allowed. |
+| `events.stop` | Lifecycle; Core ends the active stream at recording stop or generation handover. | `{stream_id}`; empty result. | Cancellation must stop source reads and release stream resources. |
+| `events.ended` | `events`; plugin notification. | `{stream_id,reason}`. | Ends the current stream; Core may reconnect with the latest durable resume state. |
 | `refresh` | `refresh`; Core asks for replacement media when adapter-defined refresh policy triggers. | `RefreshParams`; result `RefreshResult`. | Core validates replacement media and state mutation before use. A failed refresh does not make the adapter-provided current media disappear; callers determine recording error handling. |
 | `resource.list` | `resource_browse`; called for non-search browse. | `ResourceListParams`; result `ResourcePage`. | Core clamps page limit and validates parent/type membership, item count, cursor size, and duplicates. |
 | `resource.search` | `resource_browse`; called when a nonempty query is supplied. | `ResourceSearchParams`; result `ResourcePage`. | Same resource/page validation as list. |
@@ -428,6 +435,70 @@ challenge states provide a `WorkflowChallenge`; `resolved` provides media;
 Core bounds active workflows at 128, transitions at 32, and idle lifetime at
 30 minutes. Workflow state is in memory and does not survive adapter/Control
 process restart.
+
+## Timed event streams
+
+This capability is platform-neutral. Core owns protocol framing, canonical
+archive, identity/deduplication, ordering, lifecycle, and replay. The adapter
+owns platform connection/authentication, source cursor semantics, reconnect,
+and payload interpretation. Core does not proxy WebSocket/HTTP transports or
+interpret platform fields.
+
+`events.start`, `events.ack`, and `events.stop` are requests. `events.batch`
+and `events.ended` are typed notifications on the same stdout protocol stream.
+The Core registers the stream before sending `events.start`; a plugin should
+begin emission only after returning the start response. The Core accepts one
+outstanding batch at a time. A batch is acknowledged only after its events,
+identity index, batch index, and opaque resume state are durable under the
+recording root visibility marker. A plugin may checkpoint/advance its own
+source cursor only after the matching `events.ack` succeeds. If the process or
+generation changes before acknowledgement, it must replay from the last
+acknowledged cursor.
+
+Limits: 32 KiB per event, 8 KiB for `extension`, 16 KiB for `resume_state`,
+64 events and 256 KiB per batch. Core buffers one batch per stream; exceeding
+the bounded stream is isolated as an event-stream failure and does not fail
+media capture. Plugins must honor cancellation, stop source reads, and avoid
+building an unbounded in-memory queue. SDK `TimedEventBatcher` applies a smaller
+32-event and 64-event queue limit, flushes by size or within 250 ms, and waits
+for Core acknowledgement.
+
+`event_type` is an opaque dot-qualified lowercase identifier, for example
+`chat.message`, `chat.edit`, `chat.delete`, `chat.system`,
+`support.donation`, `support.subscription`, `moderation.timeout`, or
+`source.notice`. New types do not require a Core release. Common fields are
+`actor`, `message`, `reply_to`, `amount`, and `currency`; `payload` and
+`extension` are bounded JSON objects for normalized or plugin-owned data.
+Unknown valid event types and values inside `payload`/`extension` are retained;
+unrecognized top-level members are not part of the wire contract. Secret-like keys, credentialed
+URLs, signed URL query parameters, invalid nesting, and oversized objects are
+rejected. Do not send raw transport frames, cookies, headers, tokens, or
+authentication material.
+
+Ordering is append-only and independent of source time. Core assigns
+`event_archive_ordinal` and `event_timeline_ordinal` at durable commit in the
+order accepted. The ordinals are independent of media archive, playback, and
+live-presentation ordinals. `observed_at` is Core UTC receipt time. The optional
+`source_timestamp` and `source_sequence` are preserved as provenance and never
+reorder canonical appends. The replay presentation offset is derived from Core
+observation time since recording start and clamped nondecreasing; it is an
+approximate capture-time mapping, not a source-clock assertion.
+
+Identity preference is: `(event_type, source_event_id)`, then
+`(event_type, source_sequence)`. A plugin-provided sequence must remain stable
+across reconnects for the recording. When neither identity is available,
+`(batch_id, event index)` only makes retrying that exact batch idempotent. A
+new batch with the same source-less content is retained as a separate event;
+content and timestamps cannot distinguish replay from a legitimate repeated
+message. Plugins should provide a stable source ID or sequence where available.
+Stable batch IDs must be reused only for an identical batch and resume state;
+reusing one with changed content is a protocol conflict.
+
+Core commits the batch and its `resume_state` together before acknowledgement.
+On restart/handover, Core starts the new stream with the latest durable cursor;
+the plugin performs source-specific catch-up. With no cursor, a plugin may
+replay best-effort and Core deduplicates by event identity. Sealed archives
+reject event mutation. Stop/completion alone does not seal the archive.
 
 ## Media, refresh, watch, and metadata
 
